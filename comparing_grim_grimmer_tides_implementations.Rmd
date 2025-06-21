@@ -1,0 +1,502 @@
+---
+title: "Comparing rsprite2 and scrutiny+tides' implementations of granularity + range testing"
+author: "Ian Hussey"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: haddock
+    theme: flatly
+    toc: yes
+    toc_float: yes
+---
+
+# Overview
+
+{rsprite2} and {scrutiny} both provide implementations of GRIM and GRIMMER. However, they seem to return different conclusions for many values.
+
+I originally became interested in this when looking into rsprite2::.sd_limits() when thinking about how to implement such bounds based limits on SDs in {tides}. 
+
+The two do differ in their implementations in intentional ways, i.e., rsprite2 applies not only granularity tests but also (quietly) applies bounds tests. Whereas scrutiny only applies granularity tests.
+
+However, the results returned by the two differ on more than just this difference. In the below, I compare rsprite2 (granularity+boundary tests) vs. scrutiny(granluarity)+tides(boundary). 
+
+First I create contrast umbrella plots made with the two methods, then I try to find the reasons for disagreements. 
+  
+```{r include=FALSE}
+
+# formatting options
+# set default chunk options
+knitr::opts_chunk$set(message = FALSE, 
+warning = FALSE)
+
+# disable scientific notation
+options(scipen = 999) 
+
+```
+
+```{r}
+
+library(tidyverse)
+library(janitor)
+library(rsprite2)
+library(scrutiny) 
+#devtools::install_github("ianhussey/tides")
+library(tides)
+library(purrr)
+library(patchwork)
+library(knitr)
+library(kableExtra)
+
+dir.create("models")
+dir.create("plots")
+
+min_decimals <- function(x, digits = 2) {
+  sprintf(paste0("%.", digits, "f"), x)
+}
+
+```
+
+# Comparing umbrella plots made with different packages
+
+## Umbrella plot using rsprite::GRIMMER_test
+
+which actually applies not only granularity testing but also bounds testing via .sd_limits()
+
+### Generate data
+
+```{r}
+
+# create possibly version of GRIMMER_test that fails quietly, given that it seems to have a bug
+possibly_GRIMMER_test = possibly(GRIMMER_test, otherwise = FALSE)
+
+dat_rsprite2 <- 
+  expand_grid(mean = seq(from = 1, to = 7, by = 0.01),
+              sd = seq(from = 0, to = 3.5, by = 0.01)) |>
+  mutate(n_obs   = 14,
+         m_prec  = 2,
+         sd_prec = 2,
+         n_items = 1,
+         min_val = 1, 
+         max_val = 7) |>
+  mutate(grim    = pmap(list(mean, n_obs, m_prec, n_items), 
+                        GRIM_test)) |>
+  mutate(grimmer = pmap(list(mean, sd, n_obs, m_prec, sd_prec, n_items, min_val, max_val),
+                        possibly_GRIMMER_test)) |>
+  unnest(grim) |>
+  unnest(grimmer)
+
+```
+
+### Plot
+
+```{r fig.height=7, fig.width=10}
+
+# only GRIM and GRIMMER-consistent values
+dat_rsprite2 |>
+  filter(grim & grimmer) |>
+  ggplot(aes(mean, sd)) +
+  geom_point(shape = 15, size = 0.5) +
+  theme_linedraw() +
+  scale_y_continuous(breaks = scales::breaks_pretty(n = 8), 
+                     name = "Standard Deviation",
+                     limit = c(0, 3.5), 
+                     expand = c(0.01, 0.01)) +
+  scale_x_continuous(breaks = scales::breaks_pretty(n = 7), 
+                     name = "Mean",
+                     limit = c(0.5, 7.5), 
+                     expand = c(0.01, 0.01)) +
+  scale_color_viridis_d(begin = 0.3, end = 0.7, direction = -1) +
+  ggtitle("rsprite2::GRIMMER_test()")
+
+ggsave("plots/umbrella plot - rsprite2::GRIMMER_test().png",
+       height = 7, 
+       width = 10)
+
+```
+
+- observe the vertical gaps in the plot, and the original bug of the point at (7,0) being missing.
+- some of these are due to issues with .sd_limits() eg the point at (7,0), and others seemt to be issues with rsprite2's::GRIMMER_test implementation eg the missing column of values at 2.86. 
+
+## Umbrella plot using scrutiny::grim + scrutiny::grimmer + tides::tides
+
+scrutiny::grim() and scrutiny::grimmer() apply granularity tests only, tides::tides() provides boundary tests on both mean and SD. Explicating boundary tests as a distinct form of consistency tests is the point of {tides}.
+
+### Generate data
+
+```{r}
+
+# dat_scrutiny_tides <-
+#   expand_grid(mean = seq(from = 0.5, to = 7.5, by = 0.01),
+#               sd = seq(from = 0, to = 4, by = 0.01)) |>
+#   mutate(n_obs   = 14,
+#          precision = 2,
+#          n_items = 1,
+#          min_val = 1,
+#          max_val = 7) |>
+#   mutate(grim = pmap(list(as.character(mean), n_obs),
+#                      grim)) |>
+#   mutate(grimmer = pmap(list(as.character(mean), as.character(sd), n_obs),
+#                         grimmer)) |>
+#   mutate(tides = purrr::pmap(.l = list(mean = mean,
+#                                        sd = sd,
+#                                        n = n_obs,
+#                                        min = min_val,
+#                                        max = max_val,
+#                                        n_items = n_items,
+#                                        digits = precision),
+#                              verbose = FALSE,
+#                              .f = tides)) |>
+#   # unnest columns
+#   unnest(grim) |>
+#   unnest(grimmer) |>
+#   unnest(tides)
+# 
+# write_rds(dat_scrutiny_tides, "models/dat_scrutiny_tides_n_14.rds")
+
+dat_scrutiny_tides <- read_rds("models/dat_scrutiny_tides_n_14.rds")
+
+```
+
+### Plot 
+
+```{r fig.height=7, fig.width=10}
+
+dat_scrutiny_tides |>
+  filter(grim & grimmer & tides_consistent) |>
+  ggplot(aes(mean, sd)) +
+  geom_point(shape = 15, size = 0.5) +
+  theme_linedraw() +
+  scale_y_continuous(breaks = scales::breaks_pretty(n = 8), 
+                     name = "Standard Deviation",
+                     limit = c(0, 3.5), 
+                     expand = c(0.01, 0.01)) +
+  scale_x_continuous(breaks = scales::breaks_pretty(n = 7), 
+                     name = "Mean",
+                     limit = c(0.5, 7.5), 
+                     expand = c(0.01, 0.01)) +
+  scale_color_viridis_d(begin = 0.3, end = 0.7, direction = -1) +
+  ggtitle("scrutiny::grim() & scrutiny::grimmer() & tides::tides()")
+
+ggsave("plots/umbrella plot - scrutiny::grim() & scrutiny::grimmer() & tides::tides().png",
+       height = 7, 
+       width = 10)  
+
+```
+
+## Direct comparison of umbrella plot data points
+
+### Explore counts
+
+```{r fig.height=7, fig.width=10}
+
+dat_rsprite2_passed <- dat_rsprite2 |>
+  filter(grim & grimmer) |>
+  select(mean, sd, n_obs)
+
+nrow(dat_rsprite2_passed)
+
+dat_rsprite2_passed |>
+  distinct(mean) |>
+  count()
+
+
+dat_scrutiny_tides_passed <- dat_scrutiny_tides |>
+  filter(grim & grimmer & tides_consistent) |>
+  select(mean, sd, n_obs)
+
+nrow(dat_scrutiny_tides)
+
+dat_scrutiny_tides |>
+  distinct(mean) |>
+  count()
+
+
+dat_scrutiny_tides_not_rsprite2 <- dat_scrutiny_tides_passed |>
+  anti_join(dat_scrutiny_tides_passed, by = join_by(mean, sd, n_obs))
+
+nrow(dat_scrutiny_tides_not_rsprite2)
+
+dat_scrutiny_tides_not_rsprite2 |>
+  distinct(mean) |>
+  count()
+
+```
+
+### Plot
+
+```{r fig.height=7, fig.width=10}
+
+dat_combined <- dat_scrutiny_tides_passed |> 
+  mutate(scrutiny_tides = TRUE) |>
+  full_join(dat_rsprite2_passed |> mutate(rsprite2 = TRUE), 
+            by = join_by(mean, sd, n_obs)) |>
+  mutate(method = case_when(scrutiny_tides + rsprite2 == 2 ~ "both",
+                            scrutiny_tides + rsprite2 == 0 ~ "neither",
+                            scrutiny_tides & is.na(rsprite2) ~ "scrutiny+tides only",
+                            is.na(scrutiny_tides) & rsprite2 ~ "rsprite2 only"))
+
+dat_combined |>
+  ggplot(aes(mean, sd, color = method)) +
+  geom_point(shape = 15, size = 0.5) +
+  theme_linedraw() +
+  scale_y_continuous(breaks = scales::breaks_pretty(n = 8), 
+                     name = "Standard Deviation",
+                     limit = c(0, 3.5), 
+                     expand = c(0.01, 0.01)) +
+  scale_x_continuous(breaks = scales::breaks_pretty(n = 7), 
+                     name = "Mean",
+                     limit = c(0.5, 7.5), 
+                     expand = c(0.01, 0.01)) +
+  #scale_color_viridis_d(begin = 0.1, end = 0.9, direction = -1) +
+  ggtitle("scrutiny+tides vs rsprite2")
+
+ggsave("plots/umbrella plot - scrutiny+tides vs. rpsrite2.png",
+       height = 7, 
+       width = 10)  
+
+dat_combined |>
+  count(method)
+
+```
+
+### Unique to one method
+
+```{r fig.height=21, fig.width=10}
+
+dat_combined |>
+  ggplot(aes(mean, sd, color = method)) +
+  geom_point(shape = 15, size = 0.5) +
+  theme_linedraw() +
+  scale_y_continuous(breaks = scales::breaks_pretty(n = 8), 
+                     name = "Standard Deviation",
+                     limit = c(0, 3.5), 
+                     expand = c(0.01, 0.01)) +
+  scale_x_continuous(breaks = scales::breaks_pretty(n = 7), 
+                     name = "Mean",
+                     limit = c(0.5, 7.5), 
+                     expand = c(0.01, 0.01)) +
+  #scale_color_viridis_d(begin = 0.1, end = 0.9, direction = -1) +
+  ggtitle("rsprite2 only") +
+  facet_wrap(~method, ncol = 1)
+
+ggsave("plots/umbrella plot - facet by method.png",
+       height = 21, 
+       width = 10)  
+
+```
+
+# What gives rise to the differences between the methods?
+
+## Implementation of SD bounds in rsprite2::.sd_limits()
+
+Demonstrate the problem:
+
+This works correctly: all participants respond 1, therefore M = 1, SD = 0
+
+```{r}
+
+n_digits <- 2
+
+dat <- 
+  tibble(score = rep(1, times = 100)) |>
+  summarize(mean = round_half_up(mean(score), n_digits),
+            sd = round_half_up(sd(score), n_digits),
+            n = n())
+
+GRIMMER_test(mean = dat$mean, 
+             sd = dat$sd, 
+             n_obs = dat$n, 
+             m_prec = n_digits, 
+             sd_prec = n_digits, 
+             n_items = 1, 
+             min_val = 1, 
+             max_val = 7)
+
+```
+
+bug: this should also pass as only the mean changes from 1.0 to 7.0, but it fails. 
+
+Chunk set to do not run so to allow knit.
+
+```{r eval=FALSE, include=TRUE}
+
+dat <- 
+  tibble(score = rep(7, times = 100)) |>
+  summarize(mean = round_half_up(mean(score), n_digits),
+            sd = round_half_up(sd(score), n_digits),
+            n = n())
+
+GRIMMER_test(mean = dat$mean, 
+             sd = dat$sd, 
+             n_obs = dat$n, 
+             m_prec = n_digits, 
+             sd_prec = n_digits, 
+             n_items = 1, 
+             min_val = 1, 
+             max_val = 7) 
+
+```
+
+### original code for .sd_limits
+
+```{r}
+
+.sd_limits <- function(n_obs, mean, min_val, max_val, sd_prec = NULL, n_items = 1) {
+  
+  if (is.null(sd_prec)) {
+    sd_prec <- max(nchar(sub("^[0-9]*", "", mean)) - 1, 0)
+  }
+  
+  result <- c(-Inf, Inf)
+  
+  aMax <- min_val                                # "aMax" means "value of a to produce the max SD"
+  aMin <- floor(mean*n_items)/n_items
+  bMax <- max(max_val, min_val + 1, aMin + 1)   # sanity check (just max_val would normally be ok)
+  bMin <- aMin + 1/n_items
+  total <- round(mean * n_obs * n_items)/n_items
+  
+  poss_values <- max_val
+  for (i in seq_len(n_items)) {
+    poss_values <- c(poss_values, min_val:(max_val-1) + (1 / n_items) * (i - 1))
+  }
+  poss_values <- sort(poss_values)
+  
+  for (abm in list(c(aMin, bMin, 1), c(aMax, bMax, 2))) {
+    
+    a <- abm[1]
+    b <- abm[2]
+    m <- abm[3]
+    
+    
+    k <- round((total - (n_obs * b)) / (a - b))
+    k <- min(max(k, 1), n_obs - 1)               # ensure there is at least one of each of two numbers
+    vec <- c(rep(a, k), rep(b, n_obs - k))
+    diff <- sum(vec) - total
+    
+    if ((diff < 0)) {
+      vec <- c(rep(a, k - 1), a + abs(diff), rep(b, n_obs - k))
+    }
+    else if ((diff > 0)) {
+      vec <- c(rep(a, k), b - diff, rep(b, n_obs - k - 1))
+    }
+    
+    # # Debugging: Print relevant information to diagnose the issue
+    # cat("Iteration for a =", a, "b =", b, "\n")
+    # cat("Generated vec:", vec, "\n")
+    # cat("Mean of vec:", mean(vec), "Expected mean:", mean, "\n")
+    # cat("SD of vec:", sd(vec), "\n\n")
+    
+    if (round(mean(vec), sd_prec) != round(mean, sd_prec) | !all(floor(vec*10e9) %in% floor(poss_values*10e9))) {
+      stop("Error in calculating range of possible standard deviations")
+    }
+    
+    result[m] <- round(sd(vec), sd_prec)
+  }
+  
+  return(result)
+}
+
+```
+
+### potentially fixed code
+
+```{r}
+
+.sd_limits_fixed <- function(n_obs, mean, min_val, max_val, sd_prec = NULL, n_items = 1) {
+  
+  if (is.null(sd_prec)) {
+    sd_prec <- max(nchar(sub("^[0-9]*", "", mean)) - 1, 0)
+  }
+  
+  result <- c(-Inf, Inf)
+  
+  aMax <- min_val
+  aMin <- floor(mean*n_items)/n_items
+  # bMax <- max(max_val, min_val + 1, aMin + 1) # original
+  bMax <- min(max(max_val, min_val + 1, aMin + 1), max_val)   # Adjusted here
+  # bMin <- aMin + 1/n_items # original
+  bMin <- min(aMin + 1/n_items, max_val)                      # Adjusted here
+  total <- round(mean * n_obs * n_items)/n_items
+  
+  poss_values <- max_val
+  for (i in seq_len(n_items)) {
+    poss_values <- c(poss_values, min_val:(max_val-1) + (1 / n_items) * (i - 1))
+  }
+  poss_values <- sort(poss_values)
+  
+  for (abm in list(c(aMin, bMin, 1), c(aMax, bMax, 2))) {
+    
+    a <- abm[1]
+    b <- abm[2]
+    m <- abm[3]
+    
+    # Adjust a and b to be within min_val and max_val
+    a <- min(max(a, min_val), max_val)
+    b <- min(max(b, min_val), max_val)
+   
+    if (a == b) {
+      vec <- rep(a, n_obs)
+    } else {
+      k <- round((total - (n_obs * b)) / (a - b))
+      k <- min(max(k, 1), n_obs - 1)
+      vec <- c(rep(a, k), rep(b, n_obs - k))
+      diff <- sum(vec) - total
+      
+      if ((diff < 0)) {
+        vec <- c(rep(a, k - 1), a + abs(diff), rep(b, n_obs - k))
+      } else if ((diff > 0)) {
+        vec <- c(rep(a, k), b - diff, rep(b, n_obs - k - 1))
+      }
+    }
+    
+    if (round(mean(vec), sd_prec) != round(mean, sd_prec) | !all(floor(vec*10e9) %in% floor(poss_values*10e9))) {
+      stop("Error in calculating range of possible standard deviations")
+    }
+    
+    result[m] <- round(sd(vec), sd_prec)
+  }
+  
+  return(result)
+}
+
+```
+
+now works: mean of 7.0 now passes 
+
+```{r}
+
+n_digits <- 2
+
+# now works correctly
+# all participants respond 7, therefore M = 7, SD = 0
+dat <- 
+  tibble(score = rep(7, times = 100)) |>
+  summarize(mean = round_half_up(mean(score), n_digits),
+            sd = round_half_up(sd(score), n_digits),
+            n = n())
+
+.sd_limits_fixed(n_obs = dat$n, 
+                 mean = dat$mean, 
+                 min_val = 1, 
+                 max_val = 7,
+                 sd_prec = n_digits, 
+                 n_items = 1)
+
+```
+
+- I employ the above corrected code in tides::tides(), which are used in the umbrella plots at the top of the file.
+
+## Sample vs pooled SD?
+
+The differences are mostly related to SDs/GRIMMER, but a few specific values of mean/GRIM too.
+
+Possibly use of sample vs population SD? the prepubmed checker checks both, and passes one vs the other following a similar pattern to that in the data here:
+
+http://www.prepubmed.org/grimmer_sd/?type=unknown&direction=Up&sd=0.90&mean=6.57&size=14
+
+## Other issues?
+
+...
+
+
