@@ -39,8 +39,8 @@ options(scipen = 999)
 
 library(tidyverse)
 library(janitor)
-library(rsprite2)
-library(scrutiny) 
+library(rsprite2) # version 0.2.1.9001, which fixed the SD limits bug, installed 2025-06-23
+library(scrutiny) # version 0.3
 #devtools::install_github("ianhussey/tides")
 library(tides)
 library(purrr)
@@ -109,7 +109,7 @@ dat_rsprite2 |>
   scale_color_viridis_d(begin = 0.3, end = 0.7, direction = -1) +
   ggtitle("rsprite2::GRIMMER_test()")
 
-ggsave("plots/umbrella plot - rsprite2::GRIMMER_test().png",
+ggsave("plots/umbrella plot - rsprite2 GRIMMER_test().png",
        height = 7, 
        width = 10)
 
@@ -118,43 +118,15 @@ ggsave("plots/umbrella plot - rsprite2::GRIMMER_test().png",
 - observe the vertical gaps in the plot, and the original bug of the point at (7,0) being missing.
 - some of these are due to issues with .sd_limits() eg the point at (7,0), and others seemt to be issues with rsprite2's::GRIMMER_test implementation eg the missing column of values at 2.86. 
 
-## Umbrella plot using scrutiny::grim + scrutiny::grimmer + tides::tides
+## Umbrella plot using tides::umbrella
 
-scrutiny::grim() and scrutiny::grimmer() apply granularity tests only, tides::tides() provides boundary tests on both mean and SD. Explicating boundary tests as a distinct form of consistency tests is the point of {tides}.
+Which itself relies on scrutiny::grimmer and tides::sd_bounds
 
 ### Generate data
 
 ```{r}
 
-# dat_scrutiny_tides <-
-#   expand_grid(mean = seq(from = 0.5, to = 7.5, by = 0.01),
-#               sd = seq(from = 0, to = 4, by = 0.01)) |>
-#   mutate(n_obs   = 14,
-#          precision = 2,
-#          n_items = 1,
-#          min_val = 1,
-#          max_val = 7) |>
-#   mutate(grim = pmap(list(as.character(mean), n_obs),
-#                      grim)) |>
-#   mutate(grimmer = pmap(list(as.character(mean), as.character(sd), n_obs),
-#                         grimmer)) |>
-#   mutate(tides = purrr::pmap(.l = list(mean = mean,
-#                                        sd = sd,
-#                                        n = n_obs,
-#                                        min = min_val,
-#                                        max = max_val,
-#                                        n_items = n_items,
-#                                        digits = precision),
-#                              verbose = FALSE,
-#                              .f = tides)) |>
-#   # unnest columns
-#   unnest(grim) |>
-#   unnest(grimmer) |>
-#   unnest(tides)
-# 
-# write_rds(dat_scrutiny_tides, "models/dat_scrutiny_tides_n_14.rds")
-
-dat_scrutiny_tides <- read_rds("models/dat_scrutiny_tides_n_14.rds")
+dat_umbrella_tides <- umbrella(n = 14, min = 1, max = 7, n_items = 1, precision = 2) 
 
 ```
 
@@ -162,23 +134,9 @@ dat_scrutiny_tides <- read_rds("models/dat_scrutiny_tides_n_14.rds")
 
 ```{r fig.height=7, fig.width=10}
 
-dat_scrutiny_tides |>
-  filter(grim & grimmer & tides_consistent) |>
-  ggplot(aes(mean, sd)) +
-  geom_point(shape = 15, size = 0.5) +
-  theme_linedraw() +
-  scale_y_continuous(breaks = scales::breaks_pretty(n = 8), 
-                     name = "Standard Deviation",
-                     limit = c(0, 3.5), 
-                     expand = c(0.01, 0.01)) +
-  scale_x_continuous(breaks = scales::breaks_pretty(n = 7), 
-                     name = "Mean",
-                     limit = c(0.5, 7.5), 
-                     expand = c(0.01, 0.01)) +
-  scale_color_viridis_d(begin = 0.3, end = 0.7, direction = -1) +
-  ggtitle("scrutiny::grim() & scrutiny::grimmer() & tides::tides()")
+umbrella_plot(dat_umbrella_tides)
 
-ggsave("plots/umbrella plot - scrutiny::grim() & scrutiny::grimmer() & tides::tides().png",
+ggsave("plots/umbrella plot - tides.png",
        height = 7, 
        width = 10)  
 
@@ -192,7 +150,10 @@ ggsave("plots/umbrella plot - scrutiny::grim() & scrutiny::grimmer() & tides::ti
 
 dat_rsprite2_passed <- dat_rsprite2 |>
   filter(grim & grimmer) |>
-  select(mean, sd, n_obs)
+  select(mean, sd, n = n_obs) |> 
+  mutate_all(as.character) |>
+  mutate(mean = restore_zeros(mean, 2),
+         sd = restore_zeros(sd, 2))
 
 nrow(dat_rsprite2_passed)
 
@@ -201,23 +162,25 @@ dat_rsprite2_passed |>
   count()
 
 
-dat_scrutiny_tides_passed <- dat_scrutiny_tides |>
-  filter(grim & grimmer & tides_consistent) |>
-  select(mean, sd, n_obs)
+dat_tides_passed <- dat_umbrella_tides |>
+  select(mean, sd, n) |> 
+  mutate_all(as.character) |>
+  mutate(mean = restore_zeros(mean, 2),
+         sd = restore_zeros(sd, 2))
 
-nrow(dat_scrutiny_tides)
+nrow(dat_tides_passed)
 
-dat_scrutiny_tides |>
+dat_tides_passed |>
   distinct(mean) |>
   count()
 
 
-dat_scrutiny_tides_not_rsprite2 <- dat_scrutiny_tides_passed |>
-  anti_join(dat_scrutiny_tides_passed, by = join_by(mean, sd, n_obs))
+dat_tides_not_rsprite2 <- dat_tides_passed |>
+  anti_join(dat_rsprite2_passed, by = join_by(mean, sd, n))
 
-nrow(dat_scrutiny_tides_not_rsprite2)
+nrow(dat_tides_not_rsprite2)
 
-dat_scrutiny_tides_not_rsprite2 |>
+dat_tides_not_rsprite2 |>
   distinct(mean) |>
   count()
 
@@ -227,16 +190,24 @@ dat_scrutiny_tides_not_rsprite2 |>
 
 ```{r fig.height=7, fig.width=10}
 
-dat_combined <- dat_scrutiny_tides_passed |> 
-  mutate(scrutiny_tides = TRUE) |>
-  full_join(dat_rsprite2_passed |> mutate(rsprite2 = TRUE), 
-            by = join_by(mean, sd, n_obs)) |>
-  mutate(method = case_when(scrutiny_tides + rsprite2 == 2 ~ "both",
-                            scrutiny_tides + rsprite2 == 0 ~ "neither",
-                            scrutiny_tides & is.na(rsprite2) ~ "scrutiny+tides only",
-                            is.na(scrutiny_tides) & rsprite2 ~ "rsprite2 only"))
+# combine
+dat_combined <- 
+  full_join(dat_tides_passed |> mutate(tides = TRUE),
+            dat_rsprite2_passed |> mutate(rsprite2 = TRUE), 
+            by = join_by(mean, sd, n)) |>
+  mutate(method = case_when(tides + rsprite2 == 2 ~ "both",
+                            tides + rsprite2 == 0 ~ "neither",
+                            tides & is.na(rsprite2) ~ "tides only",
+                            is.na(tides) & rsprite2 ~ "rsprite2 only"))
 
+# table
 dat_combined |>
+  count(method)
+
+# plot
+dat_combined |>
+  mutate(mean = as.numeric(mean),
+         sd = as.numeric(sd)) |>
   ggplot(aes(mean, sd, color = method)) +
   geom_point(shape = 15, size = 0.5) +
   theme_linedraw() +
@@ -255,17 +226,16 @@ ggsave("plots/umbrella plot - scrutiny+tides vs. rpsrite2.png",
        height = 7, 
        width = 10)  
 
-dat_combined |>
-  count(method)
-
 ```
 
 ### Unique to one method
 
-```{r fig.height=21, fig.width=10}
+```{r fig.height=14, fig.width=10}
 
 dat_combined |>
-  ggplot(aes(mean, sd, color = method)) +
+  mutate(mean = as.numeric(mean),
+         sd = as.numeric(sd)) |>
+  ggplot(aes(mean, sd)) +
   geom_point(shape = 15, size = 0.5) +
   theme_linedraw() +
   scale_y_continuous(breaks = scales::breaks_pretty(n = 8), 
@@ -277,11 +247,11 @@ dat_combined |>
                      limit = c(0.5, 7.5), 
                      expand = c(0.01, 0.01)) +
   #scale_color_viridis_d(begin = 0.1, end = 0.9, direction = -1) +
-  ggtitle("rsprite2 only") +
+  ggtitle("scrutiny+tides vs rsprite2") +
   facet_wrap(~method, ncol = 1)
 
 ggsave("plots/umbrella plot - facet by method.png",
-       height = 21, 
+       height = 14, 
        width = 10)  
 
 ```
