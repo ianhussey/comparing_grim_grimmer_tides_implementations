@@ -39,11 +39,13 @@ options(scipen = 999)
 
 library(tidyverse)
 library(janitor)
-library(rsprite2) # version 0.2.1.9001, which fixed the SD limits bug, installed 2025-06-23
-library(scrutiny) # version 0.3
+#devtools::install_github("lukaswallrich/rsprite2")
+library(rsprite2) # version 0.2.1.9002, which fixed the SD limits bug, installed 2025-07-10
+library(scrutiny) # version 0.3.2
 #devtools::install_github("ianhussey/tides")
 library(tides)
 library(purrr)
+library(furrr)
 library(patchwork)
 library(knitr)
 library(kableExtra)
@@ -55,6 +57,9 @@ min_decimals <- function(x, digits = 2) {
   sprintf(paste0("%.", digits, "f"), x)
 }
 
+# set up parallel processing
+plan(multisession, workers = availableCores())
+
 ```
 
 # Comparing umbrella plots made with different packages
@@ -64,6 +69,8 @@ min_decimals <- function(x, digits = 2) {
 which actually applies not only granularity testing but also bounds testing via .sd_limits()
 
 ### Generate data
+
+note that the comaprisons with scrutiny fail if round_half_up() is not used, as in the below. So, rsprite2 takes m_prec and sd_prec as inputs but does not check that the mean and sd inputs conform to them, and the use of seq() generates floating point data that may have more decimals than apparent. Together, this makes it look like GRIMMER_test missings some results. But the issue could also arise if users supplied data with a different precision than the precision argument.
 
 ```{r}
 
@@ -79,11 +86,25 @@ dat_rsprite2 <-
          n_items = 1,
          min_val = 1, 
          max_val = 7) |>
-  mutate(grim    = pmap(list(mean, n_obs, m_prec, n_items), 
-                        GRIM_test)) |>
-  mutate(grimmer = pmap(list(mean, sd, n_obs, m_prec, sd_prec, n_items, min_val, max_val),
-                        possibly_GRIMMER_test)) |>
+  mutate(mean = janitor::round_half_up(mean, m_prec),
+         sd = janitor::round_half_up(sd, sd_prec)) |>
+  mutate(grim    = future_pmap(.l = list(mean = mean, 
+                                         n_obs = n_obs, 
+                                         m_prec = m_prec, 
+                                         n_items = n_items), 
+                               .f = GRIM_test,
+                               .progress = TRUE)) |>
   unnest(grim) |>
+  mutate(grimmer = future_pmap(.l = list(mean = mean, 
+                                         sd = sd, 
+                                         n_obs = n_obs, 
+                                         m_prec = m_prec, 
+                                         sd_prec = sd_prec, 
+                                         n_items = n_items, 
+                                         min_val = min_val, 
+                                         max_val = max_val),
+                               .f = possibly_GRIMMER_test,
+                               .progress = TRUE)) |>
   unnest(grimmer)
 
 ```
@@ -126,7 +147,7 @@ Which itself relies on scrutiny::grimmer and tides::sd_bounds
 
 ```{r}
 
-dat_umbrella_tides <- umbrella(n = 14, min = 1, max = 7, n_items = 1, precision = 2) 
+dat_umbrella_tides <- umbrella(n = 14, min = 1, max = 7, n_items = 1, digits = 2) 
 
 ```
 
@@ -134,7 +155,7 @@ dat_umbrella_tides <- umbrella(n = 14, min = 1, max = 7, n_items = 1, precision 
 
 ```{r fig.height=7, fig.width=10}
 
-umbrella_plot(dat_umbrella_tides)
+plot_umbrella(dat_umbrella_tides)
 
 ggsave("plots/umbrella plot - tides.png",
        height = 7, 
@@ -230,7 +251,7 @@ ggsave("plots/umbrella plot - scrutiny+tides vs. rpsrite2.png",
 
 ### Unique to one method
 
-```{r fig.height=14, fig.width=10}
+```{r fig.height=6, fig.width=10}
 
 dat_combined |>
   mutate(mean = as.numeric(mean),
@@ -251,12 +272,14 @@ dat_combined |>
   facet_wrap(~method, ncol = 1)
 
 ggsave("plots/umbrella plot - facet by method.png",
-       height = 14, 
+       height = 6, 
        width = 10)  
 
 ```
 
 # What gives rise to the differences between the methods?
+
+[this applied to versions of rsprite2 <= 0.2.1]
 
 ## Implementation of SD bounds in rsprite2::.sd_limits()
 
@@ -457,16 +480,5 @@ dat <-
 
 - I employ the above corrected code in tides::tides(), which are used in the umbrella plots at the top of the file.
 
-## Sample vs pooled SD?
-
-The differences are mostly related to SDs/GRIMMER, but a few specific values of mean/GRIM too.
-
-Possibly use of sample vs population SD? the prepubmed checker checks both, and passes one vs the other following a similar pattern to that in the data here:
-
-http://www.prepubmed.org/grimmer_sd/?type=unknown&direction=Up&sd=0.90&mean=6.57&size=14
-
-## Other issues?
-
-...
 
 
